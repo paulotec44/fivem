@@ -1,273 +1,233 @@
-/**
- * System Resources artifacts and manifest manager
- */
-const fs = require('fs');
-const http = require('http');
-const https = require('https');
-const crypto = require('crypto');
-
-const MANIFEST_FILE = './manifest.json';
-
-main(parseArgs(process.argv.slice(2))).catch((error) => {
-    console.error(error);
-    process.exit(1);
-});
-
-/**
- * @param {{ args: string[], options: Record<string, string | boolean> }} param0 
- * @returns 
- */
-async function main({ args, options }) {
-    const [cmd] = args;
-
-    const resourceName = check(options.name, 'No --name provided');
-
-    switch (cmd) {
-        case 'download': {
-            const skipHashVerification = Boolean(options.noverify);
-
-            const resourceFile = check(options.file, 'No --file provided');
-
-            // Get manifest and check that we have passed resource name in it
-            const manifest = require(MANIFEST_FILE);
-            if (!manifest[resourceName]) {
-                return exitError('Resource name unknown');
-            }
-
-            // Get resource manifest
-            const resourceManifest = manifest[resourceName];
-
-            // Download resource file
-            await download(resourceManifest.url, resourceFile);
-
-            // Check if resource file at least isn't empty
-            const resourceFileStat = await getFileStatSafe(resourceFile);
-            if (resourceFileStat && resourceFileStat.size === 0) {
-                return exitError(`Downloaded resource ${resourceName} file is empty`);
-            }
-
-            if (skipHashVerification) {
-                console.log(`Resource file ${resourceFile} for ${resourceName} has been downloaded`);
-            } else {
-                // Verify resource file SHA256 hashsum against the one in resource' manifest
-                const actualSHA256 = await getSHA256(resourceFile);
-
-                if (resourceManifest.sha256 !== actualSHA256) {
-                    console.log(`Invalid SHA256 of resource ${resourceName} file ${resourceFile}`);
-                    console.log('Expected:', resourceManifest.sha256);
-                    console.log('Actual:', actualSHA256);
-
-                    return exitError('Resource file integrity check failed');
-                }
-    
-                console.log(`Resource file ${resourceFile} for ${resourceName} has been downloaded and verified`);
-            }
-
-            break;
-        }
-
-        case 'add':
-        case 'update': {
-            const resourceUrl = check(options.url, 'No --url provided');
-            const resourceFile = check(options.file || `${resourceName}.zip`);
-            const resourceVersion = check(options.version, 'No --version provided');
-
-            const manifest = require(MANIFEST_FILE);
-            const resourceManifest = manifest[resourceName] || {};
-            const isResourceManifestNew = Object.keys(resourceManifest).length === 0;
-
-            if (cmd === 'add') {
-                if (!isResourceManifestNew) {
-                    return exitError('Cannot add resource as it already exists, try updating instead');
-                }
-            } else {
-                if (isResourceManifestNew) {
-                    return exitError('Resource name unknown, see manifest.json for existing resources');
+{
+    "name":"brasilian",
+    "CalloutMenu":{
+		"title":"Callout Menu",
+		"description":"Choose an option",
+        "backup_menu":{
+            "title":"Backup Menu",
+			"description":"Call for backup",
+			"buttons":{
+				"code1":{
+					"title":"Code 1",
+					"description":"Call for code 1 backup"
+				},
+				"code2":{
+					"title":"Code 2",
+					"description":"Call for code 2 backup"
+				},
+				"code3":{
+					"title":"Code 3",
+					"description":"Call for code 3 backup"
+				},
+				"code99":{
+					"title":"Code 99",
+					"description":"Call for code 99 backup"
+				},
+				"cancel_backup":{
+					"title":"Cancel backup",
+					"description":"Cancel your backup request"
+				}
+			}
+        },
+        "add_nearby":{
+            "title":"Add nearby player",
+            "description":"Add the closest player to your callout (must be in the same department)"
+        },
+        "disable_callouts":{
+            "title":"Disable callouts",
+            "description":"Disable receiving callouts"
+        },
+        "debug_menu":{
+            "title":"~y~Debug menu",
+            "description":"Debug menu",
+            "submenu":{
+                "force_callouts":{
+                    "title":"Force callouts",
+                    "description":"Force a callout"
+                },
+                "toggle_callouts":{
+                    "title":"Enable/Disable callouts",
+                    "description":"Enable/Disable a callout"
                 }
             }
-
-            // Add resourceManifest to manifest in case it's new
-            manifest[resourceName] = resourceManifest;
-
-            // Download temporary resource' artifact
-            await download(resourceUrl, resourceFile);
-
-            // Compute artifact hash
-            const sha256 = await getSHA256(resourceFile);
-
-            // Delete temporary resource' artifact
-            await fs.promises.unlink(resourceFile);
-
-            // Update resource manifest
-            resourceManifest.url = resourceUrl;
-            resourceManifest.version = resourceVersion;
-            resourceManifest.sha256 = sha256;
-
-            // Write updated manifest
-            await fs.promises.writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2));
-
-            console.log(`Updated resource ${resourceName} manifest:`, resourceManifest);
-
-            break;
-        }
-    }
-}
-
-/**
- * Checks if input is a string and it is not empty
- * 
- * @param {string | boolean} inp 
- * @param {string} error 
- * @returns {string}
- */
-function check(inp, error) {
-    if (typeof inp !== 'string') {
-        return exitError(`Expected string value, got ${typeof inp}`);
-    }
-
-    if (!inp) {
-        return exitError(error);
-    }
-
-    return inp;
-}
-
-function exitError(message, code = 1) {
-    console.error(message);
-    process.exit(code);
-}
-
-/**
- * Returns hex-encoded SHA256 hashsum of the file content
- * 
- * @param {string} filename 
- * @returns {Promise<string>}
- */
-async function getSHA256(filename) {
-    const fileStat = await getFileStatSafe(filename);
-    if (!fileStat || fileStat.isDirectory()) {
-        return exitError(`${filename} does not exists or is a directory`);
-    }
-
-    return new Promise((resolve, reject) => {
-        const hash = crypto.createHash('sha256');
-        const fileStream = fs.createReadStream(filename);
-    
-        fileStream.on('data', (data) => {
-            hash.update(data);
-        })
-        fileStream.on('end', () => {
-            resolve(hash.digest('hex'));
-        });
-        fileStream.on('error', (err) => {
-            reject(err);
-        });
-    });
-}
-
-/**
- * Returns fs.Stats object if file/directory exists, null otherwise
- * 
- * Does the same thing as fs.promises.stat, but doesn't throw if stat operation was not successfull
- * 
- * @param {string} filename 
- * @returns {Promise<fs.Stats | null>}
- */
-async function getFileStatSafe(filename) {
-    return fs.promises.stat(filename).catch(() => null);
-}
-
-/**
- * Checks if file/directory exists
- * 
- * @param {string} filename 
- * @returns {Promise<fs.Stats>}
- */
-async function fileExists(filename) {
-    const fileStat = await getFileStatSafe(filename);
-
-    return fileStat !== null;
-}
-
-/**
- * Simple downloader, will follow redirects
- * 
- * @param {string} url
- * @param {string} filename 
- */
-async function download(url, filename, redirectsCount = 0) {
-    const DOWNLOAD_MAX_REDIRECTS = 50;
-
-    // If not redirect - make sure file doesn't exist
-    if (redirectsCount === 0 && await fileExists(filename)) {
-        await fs.promises.unlink(filename);
-    }
-
-    if (redirectsCount > DOWNLOAD_MAX_REDIRECTS) {
-        throw new Error(`Failed to download, maximum amount of redirects (${DOWNLOAD_MAX_REDIRECTS}) exceeded`);
-    }
-
-    const isHttp = url.startsWith('http://');
-    const isHttps = url.startsWith('https://');
-
-    if (!isHttp && !isHttps) {
-        throw new Error('Unknown download url protocol, only http and https is supported');
-    }
-
-    const protocol = isHttp ? http : https;
-
-    await new Promise((resolve, reject) => {
-        protocol.get(url, (res) => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-                const fileStream = fs.createWriteStream(filename);
-
-                fileStream.on('error', reject);
-                fileStream.on('finish', () => {
-                    fileStream.close();
-                    resolve();
-                });
-
-                res.pipe(fileStream);
-            } else if (res.headers.location) {
-                // If redirect - recurse with a given location
-                download(res.headers.location, filename, redirectsCount + 1).then(resolve, reject);
-            } else {
-                reject(new Error(res.statusCode + ' ' + res.statusMessage));
-            }
-        });
-    });
-}
-
-/**
- * Parse args array
- * 
- * @param {string[]} args 
- * @returns {{ args: string[], options: Record<string, string | boolean> }}
- */
-function parseArgs(args) {
-    const map = {
-        args: [],
-        options: {},
-    };
-
-    for (const arg of args) {
-        // Doesn't start with `--` - arbitrary arg
-        if (!arg.startsWith('--')) {
-            map.args.push(arg);
-            continue;
-        }
-
-        const argNormalized = arg.substring(2);
-
-        // If arg has no value specified - treat it like a boolean flag
-        if (!argNormalized.includes('=')) {
-            map.options[argNormalized] = true;
-            continue;
-        }
-
-        const [argName, argValue] = argNormalized.split('=');
-        map.options[argName] = argValue;
-    }
-
-    return map;
+		},
+		"code4":{
+			"title":"[Callout] Code ~g~4",
+            "description":"Complete the callout"
+		},
+		"cancel_assistance":{
+			"title":"~r~Cancel assistance",
+            "description":"Stop responding to the backup request"
+		}
+    },
+	"MainMenu": {
+		"title": "Main menu",
+		"subtitle": "Choose a submenu"
+	},
+    "DutyMenu": {
+		"title": "Duty menu",
+		"subtitle": "Choose an option",
+		"duty": "On duty",
+		"engine": "Keep engine running",
+		"cc": {
+			"title": "Toggle cruise control",
+			"description": "By enabling this option you can use CC by pressing the set keybind for it. Default is 'B'."
+		},
+		"vehicleSpawn": "Spawn vehicle",
+		"loadout": "Get loadout",
+		"refill": "Refill health & armor",
+		"tp": "Teleport to station",
+		"OptionsMenu": {
+			"title": "Options menu",
+			"subtitle": "Choose an option",
+			"lang": "Change language",
+			"blips": "Toggle blips",
+			"patrolCarBlip": "Toggle patrol car blip",
+			"menupos": {
+				"title": "Toggle menu position",
+				"description": "Checked: right~n~Unchecked: left~n~~n~It's not working on aspect ratios 17:9 and 21:9!"
+			},
+			"showNotifications": {
+				"title": "Toggle notifications",
+				"description": "Some notifications are reasource heavy, so if you have a lower spec PC you can turn them off."
+			},
+			"observation": "Toggle ped observation"
+		}
+	},
+	"SceneMenu": {
+		"title": "Scene menu",
+		"subtitle": "Choose a submenu",
+		"ObjectMenu": {
+			"title": "Object menu",
+			"subtitle": "Choose an option",
+			"spawn": "Spawn object",
+			"delete": "Delete all objects you've placed",
+			"deletePrevious": "Delete the previous object you've placed"
+		},
+		"SpeedZoneMenu": {
+			"title": "Speed zone menu",
+			"subtitle": "Choose an option",
+			"speed": "Select speed",
+			"radius": "Change radius",
+			"place": "Place speedzone",
+			"remove": "Remove speedzone",
+			"go": "Let vehicles go",
+			"removePlayer": "Remove player's speed zone"
+		}
+	},
+	"DispatchMenu": {
+		"title": "Dispatch menu",
+		"subtitle": "Choose an option",
+		"license": "Check license",
+		"plate": "Check license plate",
+		"transport": {
+			"request": "Request prison transport",
+			"cancel": "Cancel prison transport"
+		},
+		"ems": {
+			"request": "Request ambulance",
+			"cancel": "Cancel ambulance"
+		},
+		"fd": {
+			"request": "Request fire department",
+			"cancel": "Cancel fire department"
+		},
+		"coroner": {
+			"request": "Request coroner",
+			"cancel": "Cancel coroner"
+		},
+		"towTruck": {
+			"request": "Request tow truck",
+			"cancel": "Cancel tow truck"
+		},
+		"animalControl": {
+			"request": "Request animal control",
+			"cancel": "Cancel animal control"
+		},
+		"mechanic": {
+			"request": "Request mechanic",
+			"cancel": "Cancel mechanic"
+		},
+		"airAmbulance": {
+			"request": "Request air ambulance",
+			"cancel": "Cancel air ambulance"
+		},
+		"taxi": {
+			"request": "Request taxi",
+			"cancel": "Cancel taxi"
+		}
+	},
+	"PedVehicleMenu": {
+		"title": "Ped seat menu",
+		"subtitle": "Choose an option",
+		"left": "Left rear put into/order out",
+		"right": "Right rear put into/order out"
+	},
+	"TrafficStopMenu": {
+		"title": "Traffic stop menu",
+		"subtitle": "Choose an option",
+		"go": "Free to go",
+		"breathalyzer": "Breathalyzer test",
+		"drugswab": "Drugswab test",
+		"interactWith": "Interact with",
+		"orderOut": {
+			"title": "Order out of vehicle",
+			"occupants": ["All", "Driver", "Front right", "Back left", "Back right"]
+		}
+	},
+	"TrafficStopPositionMenu": {
+		"title": "Traffic stop position",
+		"subtitle": "Choose an option",
+		"follow": "Enable follow",
+		"mimic": "Enable mimic",
+		"marker": "Enable go to marker",
+		"cancel": "Cancel positioning"
+	},
+	"PedCheckMenu": {
+		"title": "Ped stop menu",
+		"subtitle": "Choose an option",
+		"license": "Ask for license",
+		"question": "Ask questions",
+		"licenses": [
+			"Driving",
+			"Hunting",
+			"Fishing",
+			"Weapon"
+		],
+		"breathalyzer": "Breathalyzer test",
+		"drugswab": "Drugswab test",
+		"move": {
+			"title": "Move ped",
+			"types": ["Follow me", "Grab ped"]
+		},
+		"search": {
+			"title": "Search",
+			"types": ["Ped", "Vehicle"]
+		},
+		"cancelMove": {
+			"title": "Cancel move",
+			"description": "Cancel following or grabbing."
+		},
+		"cuff": "Cuff ped",
+		"uncuff": "Uncuff ped",
+		"dismiss": "Dismiss ped"
+	},
+	"AdminMenu": {
+		"title": "Admin menu",
+		"subtitle": "Choose an option",
+		"garageMenu": {
+			"title": "Garages",
+			"subtitle": "Choose an option",
+			"respawnAll": "Respawn all garages",
+			"respawnOne": "Respawn garage"
+		},
+		"devMenu": {
+			"title": "Development tools",
+			"subtitle": "Choose an option",
+			"save": "Save current position",
+			"heading": "Add heading to position",
+			"model": "Add ped model to position",
+			"change": "Change ped model",
+		}
+	}
 }
